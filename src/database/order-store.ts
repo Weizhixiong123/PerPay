@@ -1,4 +1,5 @@
 import { siteClientIdSchema } from "../sites/model.ts";
+import { hasProtectedUnpaidAmountHistory } from "../orders/amount-reuse.ts";
 import { insertEpayOrder, readEpayOrder } from "../epay/store.ts";
 import type { EpayOrderCreation } from "../epay/order.ts";
 import { assertSiteCanCreate, readSite, SiteError } from "../sites/store.ts";
@@ -947,6 +948,7 @@ function allocateAmountSlot(
 ): AmountAllocationResult {
   const accountColumn = hasAccountColumn(connection);
   let earliestAvailableAt: number | undefined;
+  let reviewFallback: Extract<AmountAllocationResult, { kind: "allocated" }> | undefined;
   for (let offset = 1; offset <= maximumOffsetCents; offset += 1) {
     const payableAmountCents = requestedAmountCents + offset;
     if (payableAmountCents > MAX_PAYABLE_AMOUNT_CENTS) break;
@@ -973,7 +975,7 @@ function allocateAmountSlot(
     }
 
     const latest = connection.prepare(
-      `SELECT slot.generation, slot.released_at, orders.checkout_status,
+      `SELECT slot.slot_id, slot.generation, slot.released_at, orders.checkout_status,
               orders.closed_at, orders.expires_at, orders.amount_reuse_cooldown_seconds
          FROM amount_slots AS slot
          JOIN payment_orders AS orders ON orders.order_id = slot.order_id
@@ -981,6 +983,7 @@ function allocateAmountSlot(
         ORDER BY slot.generation DESC
         LIMIT 1`,
     ).get(...(accountColumn ? [alipayAccountId] : []), payableAmountCents) as {
+      slot_id: string;
       generation: bigint | number;
       released_at: bigint | number | null;
       checkout_status: CheckoutStatus;
@@ -988,7 +991,8 @@ function allocateAmountSlot(
       expires_at: bigint | number;
       amount_reuse_cooldown_seconds: bigint | number;
     } | undefined;
-    // Ascending offsets select the smallest available amount, whether new or reused.
+    // Ascending offsets prefer the smallest safe amount; protected amounts
+    // are retained only as a fallback for manual review.
     if (!latest) return { kind: "allocated", payableAmountCents, generation: 1 };
     if (latest.released_at === null) {
       throw new Error("active amount slot is detached from its open order");
@@ -1012,8 +1016,14 @@ function allocateAmountSlot(
     if (!Number.isSafeInteger(generation)) {
       throw new Error("amount slot generation is outside the safe integer range");
     }
-    return { kind: "allocated", payableAmountCents, generation };
+    const allocation = { kind: "allocated" as const, payableAmountCents, generation };
+    if (hasProtectedUnpaidAmountHistory(connection, latest.slot_id, now, true)) {
+      reviewFallback ??= allocation;
+      continue;
+    }
+    return allocation;
   }
+  if (reviewFallback) return reviewFallback;
   if (earliestAvailableAt === undefined || earliestAvailableAt <= now) {
     throw new Error("exhausted amount slots have no future release time");
   }

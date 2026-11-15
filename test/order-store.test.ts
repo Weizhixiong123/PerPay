@@ -583,7 +583,7 @@ describe("OrderStore", () => {
     });
   });
 
-  it("prefers the smallest cooled amount over unused or earlier-ended amounts", async () => {
+  it("prefers unused amounts over protected unpaid history, with a review fallback", async () => {
     await withStore(async ({ store, setNow }) => {
       syncProfile(store, "https://qr.example.test/reuse-order");
       const first = createdAggregate(store.createOrder(createInput(requestFor("reuse-a", "reuse-a", 1_000), 2)));
@@ -595,9 +595,9 @@ describe("OrderStore", () => {
       store.closeOrder(API_CLIENT_ID, first.order.orderId);
       setNow(TEST_START_MS + 604_000);
       const reused = createdAggregate(store.createOrder(createInput(requestFor("reuse-c", "reuse-c", 1_000), 5)));
-      assert.equal(reused.order.payableAmountCents, 1_001);
+      assert.equal(reused.order.payableAmountCents, 1_003);
       const oldest = createdAggregate(store.createOrder(createInput(requestFor("reuse-d", "reuse-d", 1_000), 2)));
-      assert.equal(oldest.order.payableAmountCents, second.order.payableAmountCents);
+      assert.equal(oldest.order.payableAmountCents, first.order.payableAmountCents);
     });
   });
 

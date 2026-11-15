@@ -24,6 +24,11 @@ import {
 } from "./detail-fixtures";
 
 describe("readable evidence without stronger financial claims", () => {
+  it("explains why unpaid historical orders block automatic confirmation", () => {
+    expect(exceptionExplanation({ ...financialException, exception_type: "AMBIGUOUS_MATCH",
+      details: { reason: "amount_reused_with_unpaid_history", candidate_count: 1 },
+    })).toBe("这个应付金额有仍在 24 小时保护期内的历史未付款订单，可能是旧订单迟付款。请核对付款凭证后人工关联订单。");
+  });
   it.each([
     "CREATED",
     "CHECKOUT_CLOSED",

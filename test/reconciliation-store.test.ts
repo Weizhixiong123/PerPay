@@ -47,6 +47,64 @@ const PROVIDER_IDENTITY = {
 } as const;
 
 describe("automatic reconciliation settlement", () => {
+  for (const ending of ["closed", "expired"] as const) {
+    it(`requires review for a reused amount after an unpaid order is ${ending}`, async () => {
+      await withStores(({ database, orders, reconciliation, recordCredit, setNow }) => {
+        const first = createOrder(orders, `reuse-${ending}-old`, 999, undefined, 1);
+        const endedAt = ending === "closed" ? BASE_TIME + 1_000 : first.order.expiresAt;
+        if (ending === "closed") {
+          setNow(endedAt);
+          orders.closeOrder(API_CLIENT_ID, first.order.orderId);
+        }
+        const reusedAt = endedAt + 600_001;
+        setNow(reusedAt);
+        const second = createOrder(orders, `reuse-${ending}-new`, 999, undefined, 1);
+        assert.equal(second.order.payableAmountCents, first.order.payableAmountCents);
+        const entry = recordCredit(`reuse-${ending}-late`, first.order.payableAmountCents, reusedAt + 1_000);
+        const result = reconciliation.reconcileEntry(entry.ledgerEntryId, reusedAt + 2_000);
+        assert.equal(result.kind, "ambiguous");
+        if (result.kind !== "ambiguous") throw new Error("expected manual review");
+        assert.equal(reconciliation.exception(result.exceptionId)?.details.reason, "amount_reused_with_unpaid_history");
+        assert.equal(reconciliation.ledgerEntry(entry.ledgerEntryId)?.state, "UNALLOCATED");
+        assert.equal(database.integrityCheck().ok, true);
+        assert.deepEqual(reconciliation.reconcileEntry(entry.ledgerEntryId, reusedAt + 3_000), result);
+        assert.equal(orders.orderById(API_CLIENT_ID, first.order.orderId)?.order.paymentStatus, "UNPAID");
+        assert.equal(orders.orderById(API_CLIENT_ID, second.order.orderId)?.order.paymentStatus, "UNPAID");
+        database.read(db => {
+          assert.equal(readCount(db, "payment_matches"), 0);
+          assert.equal(readCount(db, "outbox_events"), 0);
+          assert.equal(readCount(db, "financial_operations"), 0);
+          assert.equal(readCount(db, "financial_exceptions"), 1);
+        });
+        const target = ending === "closed" ? first : second;
+        reconciliation.settleManually({ financialOperationId: randomUUID(), orderId: target.order.orderId,
+          ledgerEntryId: entry.ledgerEntryId, actorId: "admin", reason: "verified payer receipt",
+          now: reusedAt + 4_000 });
+        assert.equal(orders.orderById(API_CLIENT_ID, target.order.orderId)?.order.paymentBasis, "MANUAL");
+        assert.equal(reconciliation.exception(result.exceptionId)?.status, "RESOLVED");
+        database.read(db => assert.equal(readCount(db, "outbox_events"), 1));
+        assert.equal(database.integrityCheck().ok, true);
+      });
+    });
+  }
+
+  it("still confirms a timely old payment discovered after its amount is reused", async () => {
+    await withStores(({ database, orders, reconciliation, recordCredit, setNow }) => {
+      const old = createOrder(orders, "reuse-timely-old", 999, undefined, 1);
+      const reusedAt = old.order.expiresAt + 600_001;
+      setNow(reusedAt);
+      const current = createOrder(orders, "reuse-timely-current", 999, undefined, 1);
+      assert.equal(current.order.payableAmountCents, old.order.payableAmountCents);
+      const timely = recordCredit("reuse-timely-receipt", old.order.payableAmountCents, BASE_TIME + 60_000);
+      assert.equal(reconciliation.reconcileEntry(timely.ledgerEntryId, reusedAt + 1_000).kind, "auto_settled");
+      const fresh = recordCredit("reuse-fresh-receipt", current.order.payableAmountCents, reusedAt + 2_000);
+      assert.equal(reconciliation.reconcileEntry(fresh.ledgerEntryId, reusedAt + 3_000).kind, "auto_settled");
+      assert.equal(orders.orderById(API_CLIENT_ID, old.order.orderId)?.order.paymentStatus, "CONFIRMED");
+      assert.equal(orders.orderById(API_CLIENT_ID, current.order.orderId)?.order.paymentStatus, "CONFIRMED");
+      assert.equal(database.integrityCheck().ok, true);
+    });
+  });
+
   it("preserves settled orders and accounting evidence while retiring overlapping duplicate ingestion", async () => {
     await withStores(async ({ database, databasePath, orders, reconciliation, recordCredit }) => {
       const order = createOrder(orders, "retained-settlement", 999);
@@ -1010,7 +1068,7 @@ async function withStores(operation: (context: StoreTestContext) => Promise<void
   }
 }
 
-function createOrder(store: OrderStore, suffix: string, requestedAmountCents: number, legacy?: { database: AppDatabase; now: number }): StoredOrderAggregate {
+function createOrder(store: OrderStore, suffix: string, requestedAmountCents: number, legacy?: { database: AppDatabase; now: number }, maximumOffsetCents = 99): StoredOrderAggregate {
   const request = createOrderRequestSchema.parse({
     idempotency_key: `idem-${suffix}`,
     merchant_order_no: `merchant-${suffix}`,
@@ -1023,7 +1081,7 @@ function createOrder(store: OrderStore, suffix: string, requestedAmountCents: nu
     idempotencyKeyDigest: digestIdempotencyKey(API_CLIENT_ID, request.idempotency_key),
     requestFingerprint: fingerprintCreateOrderRequest(request),
     ttlMilliseconds: 5 * 60 * 1_000,
-    amountOffsetMaximumCents: 99,
+    amountOffsetMaximumCents: maximumOffsetCents,
   };
   if (legacy) return createLegacyAmountReuseOrder(legacy.database, input, legacy.now, requestedAmountCents + 1);
   const result = store.createOrder(input);

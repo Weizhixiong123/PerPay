@@ -1,4 +1,5 @@
 import { assertSiteOrder, assertSiteLedger } from "../sites/admin-scope.ts";
+import { hasProtectedUnpaidAmountHistory } from "../orders/amount-reuse.ts";
 import { readManualCandidates, type ManualCandidateQuery, type ManualCandidatePage } from "./manual-candidates.ts";
 import { hasSettledPaymentIdentity, settledPaymentIdentitySql } from "./payment-identity.ts";
 import { manualOrderEligibilitySql, manualProviderAccountEligibilitySql } from "./manual-eligibility.ts";
@@ -454,6 +455,25 @@ export class ReconciliationStore {
           now,
         });
         return { kind: "unmatched", ledgerEntryId, exceptionId: exception.exceptionId };
+      }
+      // A fresh timestamp does not establish which order a static-code payer
+      // intended. An unpaid predecessor can still receive a late payment after
+      // its amount has cooled down and been allocated to this candidate.
+      if (hasProtectedUnpaidAmountHistory(connection, candidate.slotId, toSafeInteger(entry.occurred_at, "payment time"))) {
+        // Only one order fits the timestamp; CANDIDATE is reserved for two or
+        // more time-eligible orders. The historical payer remains unknown.
+        setLedgerState(connection, entry, "UNALLOCATED", now);
+        const exception = ensureException(connection, {
+          providerAccountKey: entry.provider_account_key,
+          exceptionType: "AMBIGUOUS_MATCH",
+          ledgerEntryId,
+          orderId: null,
+          candidateId: null,
+          contextKey: `unpaid-amount-history:${candidate.slotId}`,
+          details: { reason: "amount_reused_with_unpaid_history", candidate_count: 1 },
+          now,
+        });
+        return { kind: "ambiguous", ledgerEntryId, candidateIds: [candidate.candidateId], exceptionId: exception.exceptionId };
       }
       return autoSettleCandidate(connection, entry, candidate, now);
     });

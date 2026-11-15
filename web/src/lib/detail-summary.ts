@@ -99,6 +99,9 @@ export function exceptionExplanation(exception: FinancialException): string {
     case "UNLINKED_REFUND":
       return "旧版支出提示，不再提醒。";
     case "AMBIGUOUS_MATCH": {
+      if (details.reason === "amount_reused_with_unpaid_history") {
+        return "这个应付金额有仍在 24 小时保护期内的历史未付款订单，可能是旧订单迟付款。请核对付款凭证后人工关联订单。";
+      }
       const count = numberField(details, "candidate_count");
       return count !== null && count > 1
         ? "同一笔收入存在 " + count + " 条可能匹配的记录，无法唯一确认订单。"
