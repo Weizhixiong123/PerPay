@@ -273,8 +273,9 @@ export function seedFinancialScenarios(context: FinancialScenarioContext): Finan
   assert.notEqual(offset.payableAmountCents, reuseOriginal.payableAmountCents);
   close(offset);
   setNow(Math.max(getNow(), releasedAt + site.configuration.policy.orders.amount_reuse_cooldown_seconds * 1_000 + 1_000));
-  const reused = create("amountReused", "便携蓝牙音箱", 18_800, "同款补货订单，客户确认收货信息后付款。");
-  assert.equal(reused.payableAmountCents, reuseOriginal.payableAmountCents);
+  const reused = create("amountReused", "便携蓝牙音箱", 18_800, "同款补货订单，避开历史未付款金额，客户按新收银台金额付款。");
+  assert.notEqual(reused.payableAmountCents, reuseOriginal.payableAmountCents);
+  assert.notEqual(reused.payableAmountCents, offset.payableAmountCents);
   automatic(reused, "amountReused");
 
   beforeScenario("expiryPayments");

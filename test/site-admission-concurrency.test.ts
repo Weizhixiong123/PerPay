@@ -159,12 +159,13 @@ describe("multi-site admission under concurrent requests", () => {
   });
 });
 
-it("honors the previous website's longer cooldown and reuses its minimal amount at the exact boundary", async () => {
+it("honors the previous website's longer cooldown when only protected fallback amounts remain", async () => {
   const f = await createSitePaymentFixture();
   try {
     const a = f.createSite("long"), b = f.createSite("short");
     f.sites.update(b.clientId, { revision: 0, configuration: { ...b.configuration,
-      policy: { ...b.configuration.policy, orders: { ...b.configuration.policy.orders, amount_reuse_cooldown_seconds: 60 } } } }, audit);
+      policy: { ...b.configuration.policy, orders: { ...b.configuration.policy.orders,
+        amount_reuse_cooldown_seconds: 60, amount_offset_maximum_cents: 2 } } } }, audit);
     const first = f.orders.forSite(a.clientId).create(createOrderRequestSchema.parse(payload("long"))).order;
     f.orders.forSite(a.clientId).close(first.orderId);
     const releasedAt = f.now();
