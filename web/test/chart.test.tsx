@@ -97,10 +97,10 @@ describe("official shadcn interactive chart", () => {
     for (const value of values) {
       expect(value).not.toHaveClass("overflow-x-auto", "leading-none");
       expect(value).toHaveClass(
-        "whitespace-normal",
-        "wrap-anywhere",
+        "trend-value",
         "leading-tight",
       );
+      expect(value).toHaveAttribute("data-value-length", "5");
     }
     expect(screen.queryByRole("spinbutton")).not.toBeInTheDocument();
   });

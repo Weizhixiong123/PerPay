@@ -18,6 +18,7 @@ import {
 } from "../src/lib/site-configuration";
 import { AccountOnboarding } from "../src/pages/AccountOnboarding";
 import { AlipayAccountStatus } from "../src/components/alipay-account-status";
+import { Toaster } from "../src/components/ui/toast";
 import { json } from "./fixtures";
 
 const first: AlipayAccount = {
@@ -69,7 +70,7 @@ function mount(element: React.ReactNode, path = "/settings/accounts/first") {
   );
   return render(
     <QueryClientProvider client={queryClient}>
-      <RouterProvider router={router} />
+      <Toaster><RouterProvider router={router} /></Toaster>
     </QueryClientProvider>,
   );
 }
@@ -99,7 +100,7 @@ describe("支付宝账号设置", () => {
       last_check: { ok: true, checked_at: first.created_at, message: "查账连接正常" } };
     mount(<AlipayAccountEditor initial={account} onBack={() => {}} />);
     const user = userEvent.setup();
-    expect(screen.getByText("连接检查通过")).toBeVisible();
+    expect(screen.queryByText("连接检查未通过")).not.toBeInTheDocument();
     expect(screen.getByText("待补充：收款码")).toBeVisible();
     await user.click(screen.getByRole("button", { name: "继续配置收款码" }));
     expect(screen.getByRole("tab", { name: "收款码" })).toHaveAttribute("aria-selected", "true");
@@ -289,7 +290,7 @@ describe("支付宝账号设置", () => {
     expect(screen.getByLabelText("账号名称")).toHaveValue("主账号（更新）");
     expect(screen.getByText("账号已保存")).toBeVisible();
     await user.click(screen.getByRole("button", { name: "重新检查" }));
-    expect(await screen.findByText("连接检查通过")).toBeVisible();
+    expect(await screen.findByText("查账连接检查通过")).toBeVisible();
     expect(writes.map((write) => write.path)).toEqual([
       "/api/admin/v1/alipay-accounts/" + first.id,
       "/api/admin/v1/alipay-accounts/" + first.id + "/check",

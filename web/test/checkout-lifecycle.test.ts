@@ -1,6 +1,6 @@
 import { renderToString } from "react-dom/server";
 import { createElement } from "react";
-import { act, fireEvent, render, screen } from "@testing-library/react";
+import { act, fireEvent, render, screen, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   createCheckoutController,
@@ -18,6 +18,11 @@ const epoch = Date.UTC(2026, 8, 16, 6);
 let hidden = false,
   online = true;
 const cleanups: Array<() => void> = [];
+// jsdom does not apply Tailwind's responsive display utilities. Scope queries
+// to the payment panel; the desktop summary has its own CSS-switched badge.
+function paymentPanel() {
+  return within(document.querySelector<HTMLElement>("[data-checkout-payment]")!);
+}
 function initial(overrides: Partial<CheckoutInitial> = {}): CheckoutInitial {
   return {
     serverTime: epoch,
@@ -151,7 +156,7 @@ describe("checkout payment layout", () => {
     unsubscribe();
   });
 
-  it("places the heading and amount before the QR, with a single status countdown", () => {
+  it("places the heading and amount before the QR, with matching responsive status countdowns", () => {
     const { container } = render(
       createElement(CheckoutApp, { initial: initial() }),
     );
@@ -175,9 +180,10 @@ describe("checkout payment layout", () => {
       container.querySelector("[data-amount-label]"),
     );
     expect(amountRow).toHaveClass("flex", "items-baseline", "justify-center");
-    expect(amountRow).not.toHaveClass("flex-col", "flex-wrap");
+    expect(amountRow).not.toHaveClass("flex-col");
+    expect(amountRow).toHaveClass("flex-wrap");
     expect(screen.queryByText(/请勿修改|扫码付款/)).not.toBeInTheDocument();
-    const timer = screen.getByRole("timer");
+    const timer = paymentPanel().getByRole("timer");
     expect(timer).toHaveTextContent("剩余 01:00");
     expect(timer).toHaveAttribute(
       "dateTime",
@@ -185,19 +191,27 @@ describe("checkout payment layout", () => {
     );
     expect(timer.closest('[data-slot="badge"]')).toHaveTextContent("待付款");
     expect(timer.closest('[data-slot="card-action"]')).not.toBeNull();
-    expect(container.querySelectorAll("[data-countdown]")).toHaveLength(1);
+    expect(container.querySelectorAll("[data-countdown]")).toHaveLength(2);
+    expect(timer.closest('[data-slot="card-header"]')).toHaveClass("lg:hidden");
+    const desktopTimer = within(screen.getByRole("region", { name: "订单信息" })).getByRole("timer");
+    expect(desktopTimer).toHaveTextContent(timer.textContent!);
+    expect(desktopTimer.closest('[data-slot="card-header"]')).toHaveClass("hidden", "lg:flex");
     expect(timer).toHaveAttribute("aria-live", "off");
   });
   it("updates the merged countdown without announcing each second or changing its badge", async () => {
     render(createElement(CheckoutApp, { initial: initial() }));
-    const timer = screen.getByRole("timer");
+    const timer = paymentPanel().getByRole("timer");
     const badge = timer.closest('[data-slot="badge"]');
     await act(async () => {
       await vi.advanceTimersByTimeAsync(1000);
     });
-    expect(screen.getByRole("timer")).toBe(timer);
+    expect(paymentPanel().getByRole("timer")).toBe(timer);
     expect(timer.closest('[data-slot="badge"]')).toBe(badge);
     expect(timer).toHaveTextContent("剩余 00:59");
+    for (const responsiveTimer of screen.getAllByRole("timer")) {
+      expect(responsiveTimer).toHaveTextContent("剩余 00:59");
+      expect(responsiveTimer).toHaveAttribute("aria-live", "off");
+    }
     expect(
       screen.getAllByRole("status").some((status) => status.contains(timer)),
     ).toBe(false);
@@ -208,7 +222,9 @@ describe("checkout payment layout", () => {
       epoch + 3661000,
     ).toISOString();
     render(createElement(CheckoutApp, { initial: value }));
-    expect(screen.getByRole("timer")).toHaveTextContent("剩余 01:01:01");
+    for (const timer of screen.getAllByRole("timer")) {
+      expect(timer).toHaveTextContent("剩余 01:01:01");
+    }
   });
   it("replaces the countdown with state confirmation and removes the QR at local expiry", async () => {
     const value = initial();
@@ -217,7 +233,7 @@ describe("checkout payment layout", () => {
     const { container } = render(
       createElement(CheckoutApp, { initial: value }),
     );
-    expect(screen.getByRole("timer")).toHaveTextContent("剩余 00:01");
+    expect(paymentPanel().getByRole("timer")).toHaveTextContent("剩余 00:01");
     await act(async () => {
       await vi.advanceTimersByTimeAsync(1000);
     });
@@ -234,7 +250,7 @@ describe("checkout payment layout", () => {
       const { container } = render(
         createElement(CheckoutApp, { initial: initial() }),
       );
-      expect(screen.getByRole("timer")).toBeInTheDocument();
+      expect(paymentPanel().getByRole("timer")).toBeInTheDocument();
       const order = initial().checkout!;
       order.payment_instructions = null;
       if (status === "CONFIRMED" || status === "DISPUTED") {
@@ -282,7 +298,7 @@ describe("checkout desktop composition", () => {
     expect(payment).not.toContainElement(summary);
     expect(container.querySelectorAll("[data-qr-image]")).toHaveLength(1);
     expect(container.querySelectorAll("[data-payable-amount]")).toHaveLength(1);
-    expect(container.querySelectorAll("[data-countdown]")).toHaveLength(1);
+    expect(container.querySelectorAll("[data-countdown]")).toHaveLength(2);
   });
   it("keeps the same QR and in-flight read while resizing instead of mounting another checkout", async () => {
     const { fetch: read, finish } = pendingFetch();
@@ -400,7 +416,7 @@ describe("checkout compact order summary", () => {
       const summary = screen.getByRole("region", { name: "订单信息" });
       const actions = container.querySelector("[data-checkout-actions]");
       expect(actions).not.toHaveClass("mt-auto");
-      expect(actions).toHaveClass("lg:col-start-3", "lg:row-start-2");
+      expect(actions).toHaveClass("lg:col-start-1", "lg:row-start-2");
       expect(actions!.compareDocumentPosition(summary) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
       expect(actions).toContainElement(
         screen.getByRole("button", { name: "查询付款状态" }),
@@ -888,7 +904,7 @@ describe("checkout shadcn view and PNG lifecycle", () => {
     prepareDownload();
     fireEvent.click(screen.getByRole("button", { name: "放大二维码" }));
     expect(
-      screen.getByRole("dialog", { name: "支付宝付款二维码" }),
+      screen.getByRole("dialog", { name: "付款二维码" }),
     ).toHaveTextContent("¥10.01");
     vi.stubGlobal(
       "fetch",
