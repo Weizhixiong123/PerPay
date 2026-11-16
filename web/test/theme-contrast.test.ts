@@ -1,9 +1,11 @@
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { describe, expect, it } from "vitest";
-const css = readFileSync(resolve(process.cwd(), "web/src/styles.css"), "utf8");
+const css = readFileSync(resolve(process.cwd(), "web/src/styles/theme.css"), "utf8");
 function variables(selector: string) {
-  const content = css.slice(css.indexOf(selector + " {")).split("}")[0]!;
+  const start = css.indexOf(selector + " {");
+  expect(start, `Missing theme selector: ${selector}`).toBeGreaterThanOrEqual(0);
+  const content = css.slice(start).split("}")[0]!;
   return Object.fromEntries(
     [...content.matchAll(/--([\w-]+):\s*([^;]+);/g)].map((match) => [
       match[1]!,
@@ -12,6 +14,7 @@ function variables(selector: string) {
   );
 }
 function luminance(color: string) {
+  expect(typeof color, "Expected a theme color token to be defined").toBe("string");
   const match = color.match(/oklch\(([\d.]+) ([\d.]+) ([\d.]+)/);
   if (!match) throw new Error("Expected an official OKLCH token: " + color);
   const L = Number(match[1]),
