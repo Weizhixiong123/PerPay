@@ -982,6 +982,7 @@ export function createApp(dependencies: AppDependencies): Hono<AppEnvironment> {
     },
     requireReady: () => requirePaymentDatabaseReady(dependencies),
     requireBackground: () => requirePaymentBackgroundReady(dependencies),
+    requireVerificationReady: orderId => requirePaymentEntryReady(dependencies, orderId),
     rateLimit: context => {
       if (!publicCheckoutBudget.take(remoteAddress(context, dependencies.config.trustedProxy))) {
         throw new HttpApiError(429, "public_checkout_rate_limited", "请求过于频繁，请稍后重试。", 1);

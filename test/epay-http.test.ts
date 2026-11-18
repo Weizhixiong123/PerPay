@@ -16,7 +16,7 @@ import { recordLedgerEntry } from "./reconciliation-http-fixture.ts";
 const audit = { actorId: "admin" };
 const merchantOrigin = "https://merchant.example.com";
 
-async function fixture() {
+async function fixture(requestCheckoutVerification?: Parameters<typeof createApp>[0]["requestCheckoutVerification"]) {
   const f = await createSitePaymentFixture();
   const epay = f.settings.epayStore()!;
   function merchant(name: string) {
@@ -43,6 +43,7 @@ async function fixture() {
   assert.notEqual(first.credentials.platformPrivateKey, second.credentials.platformPrivateKey);
   const health = () => ({ enabled: true, state: "healthy" as const, inFlight: false, lastAttemptAt: f.now(), lastSuccessAt: f.now(), lastErrorCode: null, consecutiveFailures: 0 });
   const app = createApp({ ...f, startedAt: new Date(f.now()), clock: f.now,
+    ...(requestCheckoutVerification ? { requestCheckoutVerification } : {}),
     ledgerHealth: health,
     reconciliationHealth: () => ({ ...health(), pendingOrders: 0, continuationPending: false }),
   });
@@ -76,6 +77,38 @@ async function fixture() {
   }
   return { ...f, epay, first, second, app, headers, parameters, send, create, settle };
 }
+
+test("merchant verification schedules only an owned pending V2 order and signs the acknowledgement", async () => {
+  const scheduled: string[] = [];
+  const f = await fixture(orderId => {
+    scheduled.push(orderId);
+    return { id: "check", state: "WAITING", requested_at: new Date().toISOString(), retry_after_seconds: 2 };
+  });
+  try {
+    const created = await (await f.create("epay_v2", "verify-order")).json() as { code: number; trade_no: string };
+    assert.equal(created.code, 0);
+    const fields = { action: "check_payment", request_id: "a".repeat(32), trade_no: created.trade_no, out_trade_no: "verify-order" };
+    const check = async (credentials: EpayCredentials, overrides: Record<string, string> = {}) =>
+      await (await f.send("/api/pay/check", f.parameters(credentials, "epay_v2", { ...fields, ...overrides }))).json() as Record<string, unknown>;
+    assert.equal((await check(f.second.credentials)).code, -1);
+    assert.equal((await check(f.first.credentials, { out_trade_no: "other-order" })).code, -1);
+    assert.equal((await check(f.first.credentials, { action: "" })).code, -1);
+    assert.deepEqual(scheduled, []);
+    const acknowledgement = await check(f.first.credentials);
+    assert.equal(acknowledgement.code, 0);
+    assert.equal(acknowledgement.request_id, fields.request_id);
+    assert.equal(verifyEpayV2(acknowledgement, f.first.credentials.platformPublicKey!), true);
+    const orderId = f.epay.findOrder(f.first.site.clientId, { tradeNo: created.trade_no })!.orderId;
+    assert.deepEqual(scheduled, [orderId]);
+    const order = f.orders.forSite(f.first.site.clientId).get(orderId);
+    assert.equal(order.payment.status, "UNPAID");
+    f.settle(order);
+    assert.equal((await check(f.first.credentials)).code, 0);
+    assert.deepEqual(scheduled, [orderId]);
+  } finally {
+    f.close();
+  }
+});
 
 test("epay administration protects credentials and enforces configuration versions", async () => {
   const f = await fixture();

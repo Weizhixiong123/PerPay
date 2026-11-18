@@ -27,6 +27,7 @@ interface RouteOptions {
   readonly readBody: (context: Context<AppEnvironment>, maximumBytes: number) => Promise<Buffer>;
   readonly requireReady: () => void;
   readonly requireBackground: () => void;
+  readonly requireVerificationReady: (orderId: string) => void;
   readonly rateLimit: (context: Context<AppEnvironment>) => void;
 }
 
@@ -36,10 +37,11 @@ const exportSchema = z.object({
   notify_url: z.string().min(1).max(4096), return_url: z.string().max(4096).optional(),
 }).strict();
 
-type EpayReadAction = "query" | "info" | "orders";
+type EpayReadAction = "query" | "info" | "orders" | "check";
 const v2CommonParameters = ["pid", "timestamp", "sign", "sign_type"];
 const v2ReadParameters: Record<EpayReadAction, ReadonlySet<string>> = {
   query: new Set([...v2CommonParameters, "trade_no", "out_trade_no"]),
+  check: new Set([...v2CommonParameters, "action", "request_id", "trade_no", "out_trade_no"]),
   info: new Set(v2CommonParameters),
   orders: new Set([...v2CommonParameters, "offset", "limit", "status"]),
 };
@@ -131,7 +133,7 @@ export function registerEpayRoutes(app: Hono<AppEnvironment>, dependencies: AppD
     return context.text(content);
   });
 
-  type Action = "create" | "submit" | "query" | "info" | "orders" | "legacy" | "unsupported";
+  type Action = "create" | "submit" | EpayReadAction | "legacy" | "unsupported";
   const handle = (protocol: EpayProtocol, action: Action) => async (context: Context<AppEnvironment>) => {
     let credentials: EpayCredentials | null = null;
     let authenticated = false;
@@ -159,7 +161,7 @@ export function registerEpayRoutes(app: Hono<AppEnvironment>, dependencies: AppD
       const selected = action === "legacy" ? ({ query: "info", order: "query", orders: "orders" } as const)[parameters.act as "query" | "order" | "orders"] : action;
       let result: Record<string, unknown>;
       authenticated = true;
-      if (protocol === "epay_v2" && (selected === "query" || selected === "info" || selected === "orders")) {
+      if (protocol === "epay_v2" && (selected === "query" || selected === "info" || selected === "orders" || selected === "check")) {
         assertV2ReadParameters(selected, parameters);
       }
       const success = protocol === "epay_v1" ? 1 : 0;
@@ -171,6 +173,27 @@ export function registerEpayRoutes(app: Hono<AppEnvironment>, dependencies: AppD
         const metadata = epay.order(order.orderId)!;
         result = protocol === "epay_v1" ? { code: success, msg: "success", trade_no: metadata.tradeNo, payurl: checkout } :
           { code: success, msg: "success", trade_no: metadata.tradeNo, pay_type: "jump", pay_info: checkout };
+      } else if (selected === "check") {
+        if (parameters.action !== "check_payment" || !/^[a-f0-9]{32}$/.test(parameters.request_id ?? "") ||
+            !parameters.trade_no || !parameters.out_trade_no) {
+          throw new EpayProtocolError("invalid_parameters", "付款核实参数无效。");
+        }
+        const metadata = epay.findOrder(credentials.siteId, { tradeNo: parameters.trade_no });
+        if (!metadata || metadata.protocol !== "epay_v2") {
+          throw new EpayProtocolError("order_not_found", "订单不存在。");
+        }
+        const order = dependencies.orders.forSite(credentials.siteId).get(metadata.orderId);
+        if (order.merchantOrderNo !== parameters.out_trade_no) {
+          throw new EpayProtocolError("order_not_found", "订单不存在。");
+        }
+        if (order.checkout.status === "OPEN" && order.checkout.expiresAt > now() && order.payment.status === "UNPAID") {
+          options.requireVerificationReady(order.orderId);
+          if (!dependencies.requestCheckoutVerification?.(order.orderId)) {
+            throw new EpayProtocolError("system_not_ready", "暂时无法发起付款核实。");
+          }
+        }
+        result = { code: success, pid: credentials.pid, action: parameters.action, request_id: parameters.request_id,
+          trade_no: metadata.tradeNo, out_trade_no: order.merchantOrderNo };
       } else if (selected === "query") {
         const metadata = epay.findOrder(credentials.siteId, {
           ...(parameters.trade_no ? { tradeNo: parameters.trade_no } : { outTradeNo: parameters.out_trade_no ?? "" }),
@@ -208,6 +231,7 @@ export function registerEpayRoutes(app: Hono<AppEnvironment>, dependencies: AppD
   app.on(["GET", "POST"], "/api/pay/submit", handle("epay_v2", "submit"));
   app.post("/api/pay/create", handle("epay_v2", "create"));
   app.post("/api/pay/query", handle("epay_v2", "query"));
+  app.post("/api/pay/check", handle("epay_v2", "check"));
   app.post("/api/merchant/info", handle("epay_v2", "info"));
   app.post("/api/merchant/orders", handle("epay_v2", "orders"));
   for (const path of ["/api/pay/refund", "/api/pay/close", "/api/transfer/create", "/api/merchant/settle"]) {

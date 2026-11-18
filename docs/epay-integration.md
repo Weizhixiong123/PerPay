@@ -33,6 +33,7 @@ PerPay 提供易支付 V1 和 V2 接口，支持支付宝网页收款。已有�
 | 页面下单 | GET/POST `/submit.php` | GET/POST `/api/pay/submit` |
 | API 下单 | POST `/mapi.php` | POST `/api/pay/create` |
 | 单笔查单 | GET/POST `/api.php?act=order` | POST `/api/pay/query` |
+| 主动核实付款 | — | POST `/api/pay/check` |
 | 商户信息 | GET/POST `/api.php?act=query` | POST `/api/merchant/info` |
 | 订单列表 | GET/POST `/api.php?act=orders` | POST `/api/merchant/orders` |
 
@@ -59,6 +60,12 @@ POST 使用 UTF-8 的 `application/x-www-form-urlencoded` 表单。页面下单�
 | `sign`、`sign_type` | 按下一节计算；V1 使用 `MD5`，V2 使用 `RSA`。 |
 
 同一网站重复提交相同商户单号和业务内容时，会返回原订单。重试时保留原金额、截断前商品名、通知地址、返回地址、`param` 和协议；V2 每次更新请求时间戳并重新签名。使用原单号却改变这些内容会产生冲突。结果未知时先查原单，再重试原请求。
+
+### 主动核实付款
+
+商城后端可在顾客点击「我已完成付款」时调用 V2 的 `/api/pay/check`。请求包含 V2 公共签名参数、`action=check_payment`、本次随机生成的 32 位小写十六进制 `request_id`，以及同一笔订单的 `trade_no` 和 `out_trade_no`。签名覆盖这些字段。
+
+返回签名的 `code=0` 仅表示请求已受理。响应包含商户号、交易号、商户订单号、`action` 和 `request_id`，用来核对回执归属。PerPay 按现有调度规则核实仍在有效期内的待付款订单，实际付款结果继续通过支付通知或查单获取。
 
 ### 查询参数
 
